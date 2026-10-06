@@ -3,7 +3,14 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
-import type { LLMProvider, Message, StreamEvent, ToolDefinition, Usage } from "./types.js";
+import type {
+  LLMProvider,
+  Message,
+  StreamEvent,
+  ToolCall,
+  ToolDefinition,
+  Usage,
+} from "./types.js";
 
 export class OpenAIProvider implements LLMProvider {
   readonly model: string;
@@ -30,12 +37,25 @@ export class OpenAIProvider implements LLMProvider {
     // 2. Read the reply piece by piece as it arrives.
     let fullText = "";
     let usage: Usage = { inputTokens: 0, outputTokens: 0 };
+    
+    const toolCalls: ToolCall[] = [];
 
     for await (const chunk of stream) {
-      const text = chunk.choices[0]?.delta?.content;
+      const delta = chunk.choices[0]?.delta;
+
+      const text = delta?.content;
       if (text) {
         fullText += text;
         yield { type: "text", text };
+      }
+
+      for (const piece of delta?.tool_calls ?? []) {
+        // The first piece of a call carries its id and name; later pieces
+        // only carry more characters of the arguments JSON.
+        const call = (toolCalls[piece.index] ??= { id: "", name: "", arguments: "" });
+        if (piece.id) call.id = piece.id;
+        if (piece.function?.name) call.name = piece.function.name;
+        if (piece.function?.arguments) call.arguments += piece.function.arguments;
       }
 
       // Only the last chunk has usage (and its `choices` array is empty).
@@ -50,7 +70,12 @@ export class OpenAIProvider implements LLMProvider {
     // 3. The stream is finished: hand back the complete reply.
     yield {
       type: "done",
-      message: { role: "assistant", content: fullText },
+      message: {
+        role: "assistant",
+        content: fullText,
+        // Only include the field when the model actually asked for tools.
+        ...(toolCalls.length > 0 && { toolCalls }),
+      },
       usage,
     };
   }
