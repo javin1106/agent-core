@@ -11,8 +11,8 @@ It is Step 1 of a larger plan. This loop will later be the "brain" of:
 So the code must be **clean, reusable and importable as a library**, not a throwaway script.
 
 ## How to work with me (important)
-I am building this to **learn** how agents work. **I write all of the logic myself.**
-- Claude may only: scaffold config/folders, explain concepts, give hints and small illustrative snippets, and review my code.
+I am building this to **learn** how agents work.
+- Claude writes the code in **one medium-sized step at a time** (about one file or feature), explains it, then stops so I can ask questions.
 - Before each milestone, **explain the concept in a few lines** (e.g. how tool calling works).
 - Work **one milestone at a time**. Stop after each one and wait for me.
 - Keep code simple and readable. No clever abstractions I didn't ask for.
