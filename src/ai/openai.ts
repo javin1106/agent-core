@@ -1,5 +1,9 @@
 import OpenAI from "openai";
-import type { LLMProvider, Message, StreamEvent, Usage } from "./types.js";
+import type {
+  ChatCompletionMessageParam,
+  ChatCompletionTool,
+} from "openai/resources/chat/completions";
+import type { LLMProvider, Message, StreamEvent, ToolDefinition, Usage } from "./types.js";
 
 export class OpenAIProvider implements LLMProvider {
   readonly model: string;
@@ -12,11 +16,13 @@ export class OpenAIProvider implements LLMProvider {
 
   // `async *` makes this an async generator: a function that can `yield`
   // values one at a time. The caller receives them with `for await`.
-  async *stream(messages: Message[]): AsyncIterable<StreamEvent> {
+  async *stream(messages: Message[], tools: ToolDefinition[] = []): AsyncIterable<StreamEvent> {
     // 1. Start a streaming request. We send the whole history every time.
     const stream = await this.client.chat.completions.create({
       model: this.model,
-      messages,
+      messages: messages.map(toOpenAIMessage),
+      // OpenAI rejects an empty tools list, so leave the field out when there are none.
+      tools: tools.length > 0 ? tools.map(toOpenAITool) : undefined,
       stream: true,
       stream_options: { include_usage: true }, // ask for token counts at the end
     });
@@ -48,4 +54,36 @@ export class OpenAIProvider implements LLMProvider {
       usage,
     };
   }
+}
+
+// --- Translating our types into OpenAI's format ---
+
+function toOpenAIMessage(message: Message): ChatCompletionMessageParam {
+  switch (message.role) {
+    case "system":
+    case "user":
+      return { role: message.role, content: message.content };
+    case "assistant":
+      if (!message.toolCalls?.length) {
+        return { role: "assistant", content: message.content };
+      }
+      return {
+        role: "assistant",
+        content: message.content || null, // OpenAI wants null, not "", when there's no text
+        tool_calls: message.toolCalls.map((call) => ({
+          id: call.id,
+          type: "function",
+          function: { name: call.name, arguments: call.arguments },
+        })),
+      };
+    case "tool":
+      return { role: "tool", tool_call_id: message.toolCallId, content: message.content };
+  }
+}
+
+function toOpenAITool(tool: ToolDefinition): ChatCompletionTool {
+  return {
+    type: "function",
+    function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+  };
 }
