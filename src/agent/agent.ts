@@ -62,7 +62,13 @@ export async function* runAgent(
 
     // no tool calls
     if (!reply.toolCalls?.length) {
-      yield { type: "done", text: reply.content };
+      // Some models end a turn with no tool calls and no text. Say so instead
+      // of finishing silently, so the user knows the agent gave up.
+      const text =
+        reply.content.trim() === ""
+          ? "[The model ended its turn without an answer.]"
+          : reply.content;
+      yield { type: "done", text };
       return;
     }
 

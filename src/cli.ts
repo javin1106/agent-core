@@ -4,7 +4,10 @@ import * as readline from "node:readline/promises";
 import { OpenAIProvider } from "./ai/openai.js";
 import type { Message } from "./ai/types.js";
 import { runAgent, type Tool } from "./agent/agent.js";
-import { listFilesTool } from "./tools/test-tools.js";
+import { buildSystemPrompt } from "./agent/system-prompt.js";
+import { readTool } from "./tools/read.js";
+import { writeTool } from "./tools/write.js";
+import { createBashTool } from "./tools/bash.js";
 
 async function main() {
   const model = process.env.OPENAI_MODEL;
@@ -16,14 +19,23 @@ async function main() {
   }
 
   const provider = new OpenAIProvider(model);
-  const history: Message[] = [];
-  const tools: Tool[] = [listFilesTool];
+  const history: Message[] = [{ role: "system", content: buildSystemPrompt() }];
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
   });
 
-  console.log(`agent-core (${model}). Type "exit" to quit.\n`);
+  // `npm run dev -- --yolo` runs commands without asking (Pi's default).
+  const yolo = process.argv.includes("--yolo");
+  const confirmCommand = async (command: string): Promise<boolean> => {
+    if (yolo) return true;
+    const answer = await rl.question(`\n⚠️  Run: ${command}\n   Allow? (y/n) `);
+    return answer.trim().toLowerCase() === "y";
+  };
+
+  const tools: Tool[] = [readTool, writeTool, createBashTool(confirmCommand)];
+
+  console.log(`agent-core (${model})${yolo ? " [yolo: commands run without asking]" : ""}. Type "exit" to quit.\n`);
 
   while (true) {
     const input = (await rl.question("you> ")).trim();
@@ -57,6 +69,8 @@ async function main() {
           outputTokens += event.usage.outputTokens;
           break;
         case "done":
+          // The answer was already streamed as text; only print our own notice.
+          if (event.text.startsWith("[The model ended")) console.log(event.text);
           console.log(`\n[tokens: ${inputTokens} in, ${outputTokens} out]\n`);
           break;
       }
