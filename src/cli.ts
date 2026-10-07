@@ -7,6 +7,7 @@ import { runAgent, type Tool } from "./agent/agent.js";
 import { buildSystemPrompt } from "./agent/system-prompt.js";
 import { readTool } from "./tools/read.js";
 import { writeTool } from "./tools/write.js";
+import { editTool } from "./tools/edit.js";
 import { createBashTool } from "./tools/bash.js";
 
 async function main() {
@@ -33,7 +34,7 @@ async function main() {
     return answer.trim().toLowerCase() === "y";
   };
 
-  const tools: Tool[] = [readTool, writeTool, createBashTool(confirmCommand)];
+  const tools: Tool[] = [readTool, writeTool, editTool, createBashTool(confirmCommand)];
 
   console.log(`agent-core (${model})${yolo ? " [yolo: commands run without asking]" : ""}. Type "exit" to quit.\n`);
 
