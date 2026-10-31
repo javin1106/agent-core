@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
-import type { Tool } from "../agent/agent.js";
+import { z } from "zod";
+import { defineTool } from "../agent/agent.js";
 
 // Counts how many times `search` appears in `text`.
 function countOccurrences(text: string, search: string): number {
@@ -12,26 +13,22 @@ function countOccurrences(text: string, search: string): number {
   return count;
 }
 
-export const editTool: Tool = {
+export const editTool = defineTool({
   name: "edit",
   description:
     "Change part of an existing file by replacing an exact piece of text. " +
     "oldText must match the file exactly (spaces and indentation included) and appear only once; " +
     "include a few surrounding lines to make it unique. Don't include the line numbers that read shows. " +
     "Read the file before editing it.",
-  parameters: {
-    type: "object",
-    properties: {
-      path: { type: "string", description: "Path to the file to change" },
-      oldText: { type: "string", description: "The exact text to find (must appear once)" },
-      newText: { type: "string", description: "The text to put in its place" },
-    },
-    required: ["path", "oldText", "newText"],
-  },
+  inputSchema: z.object({
+    path: z.string().describe("Path to the file to change"),
+    oldText: z.string().describe("The exact text to find (must appear once)"),
+    newText: z.string().describe("The text to put in its place"),
+  }),
   async execute(args) {
     let content = await readFile(args.path, "utf8");
-    let oldText: string = args.oldText;
-    let newText: string = args.newText;
+    let oldText = args.oldText;
+    let newText = args.newText;
 
     // Windows files often end lines with "\r\n", but models write "\n".
     // Match the file's style so the search doesn't fail on invisible characters.
@@ -62,4 +59,4 @@ export const editTool: Tool = {
     const newLines = newText.split("\n").length;
     return `Edited ${args.path}: replaced ${oldLines} line(s) with ${newLines} line(s).`;
   },
-};
+});

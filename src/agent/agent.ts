@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type {
   ToolCall,
   ToolDefinition,
@@ -7,8 +8,27 @@ import type {
   Usage,
 } from "../ai/types.js";
 
-export interface Tool extends ToolDefinition {
-  execute(args: any): Promise<string>;
+// A tool's input is described once, as a zod schema. From it we get the JSON
+// Schema sent to the model, the check on what the model sends, and the TS type of `args`.
+export interface Tool<Input extends z.ZodType = z.ZodType> {
+  name: string;
+  description: string;
+  inputSchema: Input;
+  execute(args: z.infer<Input>): Promise<string>;
+}
+
+// Helper so TypeScript works out `args` from the schema when you write a tool.
+export function defineTool<Input extends z.ZodType>(tool: Tool<Input>): Tool<Input> {
+  return tool;
+}
+
+// The part of a tool the model sees: no code, just name, description and schema.
+export function toToolDefinition(tool: Tool): ToolDefinition {
+  return {
+    name: tool.name,
+    description: tool.description,
+    parameters: z.toJSONSchema(tool.inputSchema),
+  };
 }
 
 // don't throw any unhandled error, it will break the execution loop, instead use returns to LLM so it will correct itself
@@ -22,16 +42,22 @@ export async function executeToolCall(
   }
 
   // turn JSON text into an object, empty text means no arguments
-  let args: any;
+  let args: unknown;
   try {
     args = call.arguments.trim() === "" ? {} : JSON.parse(call.arguments);
   } catch {
     return `Error: the arguments for "${call.name}" are not valid JSON: ${call.arguments}`;
   }
 
+  // check the arguments match the tool's schema before running anything
+  const parsed = requiredTool.inputSchema.safeParse(args);
+  if (!parsed.success) {
+    return `Error: invalid arguments for "${call.name}":\n${z.prettifyError(parsed.error)}`;
+  }
+
   // execute the tool call
   try {
-    return await requiredTool.execute(args);
+    return await requiredTool.execute(parsed.data);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return `Error: ${msg}`;
@@ -44,9 +70,12 @@ export async function* runAgent(
   tools: Tool[],
   maxSteps = 25,
 ): AsyncGenerator<AgentEvent> {
+  // Converted once, not on every step: the tools don't change during a run.
+  const definitions = tools.map(toToolDefinition);
+
   for (let step = 1; step <= maxSteps; step++) {
     let reply: AssistantMessage | undefined;
-    for await (const event of provider.stream(history, tools)) {
+    for await (const event of provider.stream(history, definitions)) {
       if (event.type === "text") {
         yield event;
       } else if (event.type === "done") {

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import type { Tool } from "../agent/agent.js";
+import { z } from "zod";
+import { defineTool } from "../agent/agent.js";
 
 const DEFAULT_TIMEOUT_SECONDS = 120;
 // About 2,500 tokens. Every tool result is re-sent on every later model call,
@@ -58,24 +59,21 @@ function truncate(output: string): string {
 
 // The tool needs a way to ask the user before running a command, but asking is
 // the CLI's job (it owns the terminal). So the CLI passes in a `confirm` function.
-export function createBashTool(confirm: (command: string) => Promise<boolean>): Tool {
-  return {
+export function createBashTool(confirm: (command: string) => Promise<boolean>) {
+  return defineTool({
     name: "bash",
     description:
       "Run a bash command in the working directory and return its output (stdout and stderr) and exit code. " +
       "Use it to list folders (ls), find files (find), search text (grep), run scripts, tests and git. " +
       "Commands must finish on their own: don't start servers or interactive programs.",
-    parameters: {
-      type: "object",
-      properties: {
-        command: { type: "string", description: "The bash command to run" },
-        timeout: {
-          type: "number",
-          description: `Seconds before the command is stopped. Optional, default ${DEFAULT_TIMEOUT_SECONDS}.`,
-        },
-      },
-      required: ["command"],
-    },
+    inputSchema: z.object({
+      command: z.string().min(1).describe("The bash command to run"),
+      timeout: z
+        .number()
+        .positive()
+        .optional()
+        .describe(`Seconds before the command is stopped (default ${DEFAULT_TIMEOUT_SECONDS})`),
+    }),
     async execute(args) {
       if (!(await confirm(args.command))) {
         return "The user declined to run this command.";
@@ -91,5 +89,5 @@ export function createBashTool(confirm: (command: string) => Promise<boolean>): 
         : `Exit code: ${exitCode}`;
       return `${truncate(output.trim()) || "(no output)"}\n\n${status}`;
     },
-  };
+  });
 }
