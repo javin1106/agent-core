@@ -4,7 +4,7 @@ import * as readline from "node:readline/promises";
 import { OpenAIProvider } from "./ai/openai.js";
 import type { Message } from "./ai/types.js";
 import { runAgent, type Tool } from "./agent/agent.js";
-import { buildSystemPrompt } from "./agent/system-prompt.js";
+import { buildSystemPrompt, loadAgentsFile, MAX_AGENTS_CHARS } from "./agent/system-prompt.js";
 import { readTool } from "./tools/read.js";
 import { writeTool } from "./tools/write.js";
 import { editTool } from "./tools/edit.js";
@@ -36,7 +36,18 @@ async function main() {
 
   const tools: Tool[] = [readTool, writeTool, editTool, createBashTool(confirmCommand)];
 
-  console.log(`agent-core (${model})${yolo ? " [yolo: commands run without asking]" : ""}. Type "exit" to quit.\n`);
+  console.log(`agent-core (${model})${yolo ? " [yolo: commands run without asking]" : ""}. Type "exit" to quit.`);
+
+  // Always say when AGENTS.md is in use: it steers the agent, and in a repo
+  // someone else wrote, the user should know it's there.
+  const agentsFile = loadAgentsFile(process.cwd());
+  if (agentsFile) {
+    console.log(`📄 Using AGENTS.md (${agentsFile.originalLength} characters)`);
+    if (agentsFile.truncated) {
+      console.log(`⚠️  AGENTS.md is too long: only the first ${MAX_AGENTS_CHARS} characters are used.`);
+    }
+  }
+  console.log();
 
   while (true) {
     const input = (await rl.question("you> ")).trim();
