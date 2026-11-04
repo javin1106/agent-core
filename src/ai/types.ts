@@ -41,6 +41,9 @@ export class LLMError extends Error {
     message: string,
     readonly retryable: boolean, // worth trying again? (rate limit, server error, network)
     readonly retryAfterMs?: number, // how long the server asked us to wait, if it said
+    // Text the model had already sent before the stream broke. Only set when the
+    // partial reply was plain text (no tool-call pieces), so it's safe to resume from.
+    readonly partialText = "",
   ) {
     super(message);
     this.name = "LLMError";

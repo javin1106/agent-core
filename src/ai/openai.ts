@@ -77,7 +77,11 @@ export class OpenAIProvider implements LLMProvider {
       }
     } catch (err) {
       // The request was accepted but the stream broke partway (e.g. the connection dropped).
-      throw toLLMError(err, true);
+      // Pass on the text received so far, so the retry can continue it instead of
+      // starting over. Not if tool-call pieces had started: half a JSON object
+      // can't be safely continued, so that case restarts from scratch.
+      const partialText = toolCalls.length === 0 ? fullText : "";
+      throw toLLMError(err, true, partialText);
     }
 
     // 3. The stream is finished: hand back the complete reply.
@@ -97,15 +101,16 @@ export class OpenAIProvider implements LLMProvider {
 // --- Turning SDK errors into our LLMError ---
 
 // Decides which failures are worth retrying. `midStream` is true when the
-// request had already started streaming and then broke.
-function toLLMError(err: unknown, midStream: boolean): LLMError {
+// request had already started streaming and then broke; `partialText` is the
+// reply text received before that.
+function toLLMError(err: unknown, midStream: boolean, partialText = ""): LLMError {
   // The user cancelled (we'll use this for Ctrl+C later): never retry.
   if (err instanceof OpenAI.APIUserAbortError) {
     return new LLMError("Request cancelled", false);
   }
   // Couldn't reach the server at all (no internet, DNS, timeout): try again.
   if (err instanceof OpenAI.APIConnectionError) {
-    return new LLMError(`Could not connect: ${err.message}`, true);
+    return new LLMError(`Could not connect: ${err.message}`, true, undefined, partialText);
   }
   // The server answered with an error status.
   if (err instanceof OpenAI.APIError && err.status !== undefined) {
@@ -115,12 +120,12 @@ function toLLMError(err: unknown, midStream: boolean): LLMError {
     // fix itself, so retrying would only waste time.
     const retryable = status === 408 || status === 409 || status === 429 || status >= 500;
     // err.message already starts with the status, e.g. "404 model 'x' not found".
-    return new LLMError(err.message, retryable, retryAfterMs(err.headers));
+    return new LLMError(err.message, retryable, retryAfterMs(err.headers), partialText);
   }
   const message = err instanceof Error ? err.message : String(err);
   // A stream that breaks partway is almost always a network problem.
   return midStream
-    ? new LLMError(`Connection lost during the reply: ${message}`, true)
+    ? new LLMError(`Connection lost during the reply: ${message}`, true, undefined, partialText)
     : new LLMError(message, false);
 }
 

@@ -68,11 +68,18 @@ async function main() {
 
     // Tokens for this turn only (one turn can be several model calls).
     const turn: Usage = { inputTokens: 0, outputTokens: 0 };
+    // True right after a "resuming" notice, until the continuation's first text arrives.
+    let resumedReply = false;
 
     try {
       for await (const event of runAgent(provider, history, tools)) {
         switch (event.type) {
           case "text":
+            // Mark where a resumed reply picks up again, e.g. "…lo, world".
+            if (resumedReply) {
+              process.stdout.write("…");
+              resumedReply = false;
+            }
             process.stdout.write(event.text);
             break;
           case "tool_start":
@@ -97,11 +104,15 @@ async function main() {
             break;
           case "retry": {
             const seconds = (event.delayMs / 1000).toFixed(1);
-            // Any text already printed for the failed attempt will be repeated
-            // by the retry, so say clearly that the reply is starting over.
-            process.stdout.write(
-              `\n⏳ ${event.error}\n   Retrying in ${seconds}s (attempt ${event.attempt} of ${event.maxRetries})...\n`,
-            );
+            const attempt = `(attempt ${event.attempt} of ${event.maxRetries})`;
+            if (event.resuming) {
+              // The reply will carry on from where it stopped: nothing gets repeated.
+              process.stdout.write(`\n⏳ ${event.error}\n   Resuming the reply in ${seconds}s ${attempt}...\n`);
+              resumedReply = true;
+            } else {
+              // Nothing usable to continue from, so the reply starts over.
+              process.stdout.write(`\n⏳ ${event.error}\n   Retrying in ${seconds}s ${attempt}...\n`);
+            }
             break;
           }
           case "done":

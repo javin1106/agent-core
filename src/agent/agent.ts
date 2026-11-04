@@ -114,10 +114,14 @@ async function* callModel(
   history: Message[],
   definitions: ToolDefinition[],
 ): AsyncGenerator<AgentEvent, AssistantMessage> {
+  // Reply text already sent (and printed) before a connection drop. When it's
+  // not empty, the next attempt continues it instead of starting over.
+  let resumeText = "";
+
   for (let attempt = 1; ; attempt++) {
     try {
       let reply: AssistantMessage | undefined;
-      for await (const event of provider.stream(history, definitions)) {
+      for await (const event of provider.stream(withResume(history, resumeText), definitions)) {
         if (event.type === "text") {
           yield event;
         } else if (event.type === "done") {
@@ -128,17 +132,48 @@ async function* callModel(
       if (!reply) {
         throw new Error("The model's stream ended without a reply");
       }
-      return reply;
+      // Join what was sent before the drop with the continuation, so history
+      // gets one normal reply, as if the connection had never broken.
+      return { ...reply, content: resumeText + reply.content };
     } catch (err) {
       // Only provider errors marked retryable are worth another try.
       if (!(err instanceof LLMError) || !err.retryable || attempt > MAX_RETRIES) {
         throw err;
       }
+      // If this attempt got some text out before breaking, keep it: the next
+      // attempt carries on from the end of it.
+      resumeText += err.partialText;
       const delayMs = backoffMs(attempt, err.retryAfterMs);
-      yield { type: "retry", attempt, maxRetries: MAX_RETRIES, delayMs, error: err.message };
+      yield {
+        type: "retry",
+        attempt,
+        maxRetries: MAX_RETRIES,
+        delayMs,
+        error: err.message,
+        resuming: resumeText !== "",
+      };
       await sleep(delayMs);
     }
   }
+}
+
+// The messages for a resumed attempt: the history, the interrupted reply so
+// far, and a note asking the model to continue it. These two extra messages
+// are only sent for this one call; they're never added to the real history.
+function withResume(history: Message[], resumeText: string): Message[] {
+  if (resumeText === "") return history;
+  return [
+    ...history,
+    { role: "assistant", content: resumeText },
+    {
+      role: "user",
+      content:
+        "[Automatic message, not from the user] Your previous reply was cut off by a " +
+        "connection problem. Continue it from exactly where it stopped, mid-word if needed. " +
+        "Your text will be joined directly onto the end of it, so if the cut fell between " +
+        "two words, start with a space. Don't repeat any of it and don't mention the interruption.",
+    },
+  ];
 }
 
 // What the agent reports while it works. The CLI decides how to show each one.
@@ -147,7 +182,9 @@ export type AgentEvent =
   | { type: "tool_start"; call: ToolCall } // about to run a tool
   | { type: "tool_end"; call: ToolCall; result: string } // the tool finished
   | { type: "usage"; usage: Usage } // tokens used by one model call
-  | { type: "retry"; attempt: number; maxRetries: number; delayMs: number; error: string } // a model call failed; trying again
+  // a model call failed; trying again. `resuming`: the reply continues where it
+  // stopped instead of starting over.
+  | { type: "retry"; attempt: number; maxRetries: number; delayMs: number; error: string; resuming: boolean }
   | {
       type: "done";
       // answer = normal final answer; empty = the model stopped with no text;
