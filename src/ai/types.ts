@@ -33,6 +33,20 @@ export type StreamEvent =
   | { type: "text"; text: string } // a piece of the reply, printed as it arrives
   | { type: "done"; message: AssistantMessage; usage: Usage }; // the complete reply
 
+// A failed model call, in a provider-neutral form. Each provider turns its SDK's
+// errors into this, so the agent loop can decide whether to retry without
+// knowing anything about OpenAI (or any other provider).
+export class LLMError extends Error {
+  constructor(
+    message: string,
+    readonly retryable: boolean, // worth trying again? (rate limit, server error, network)
+    readonly retryAfterMs?: number, // how long the server asked us to wait, if it said
+  ) {
+    super(message);
+    this.name = "LLMError";
+  }
+}
+
 export interface LLMProvider {
   readonly model: string;
   stream(messages: Message[], tools?: ToolDefinition[]): AsyncIterable<StreamEvent>;

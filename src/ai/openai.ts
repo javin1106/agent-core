@@ -3,13 +3,14 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
-import type {
-  LLMProvider,
-  Message,
-  StreamEvent,
-  ToolCall,
-  ToolDefinition,
-  Usage,
+import {
+  LLMError,
+  type LLMProvider,
+  type Message,
+  type StreamEvent,
+  type ToolCall,
+  type ToolDefinition,
+  type Usage,
 } from "./types.js";
 
 export class OpenAIProvider implements LLMProvider {
@@ -18,53 +19,65 @@ export class OpenAIProvider implements LLMProvider {
 
   constructor(model: string) {
     this.model = model;
-    this.client = new OpenAI();
+    // The SDK would quietly retry failed requests twice by itself. We turn that
+    // off: the agent loop does the retrying, so it can show the user what's happening.
+    this.client = new OpenAI({ maxRetries: 0 });
   }
 
   // `async *` makes this an async generator: a function that can `yield`
   // values one at a time. The caller receives them with `for await`.
   async *stream(messages: Message[], tools: ToolDefinition[] = []): AsyncIterable<StreamEvent> {
     // 1. Start a streaming request. We send the whole history every time.
-    const stream = await this.client.chat.completions.create({
-      model: this.model,
-      messages: messages.map(toOpenAIMessage),
-      // OpenAI rejects an empty tools list, so leave the field out when there are none.
-      tools: tools.length > 0 ? tools.map(toOpenAITool) : undefined,
-      stream: true,
-      stream_options: { include_usage: true }, // ask for token counts at the end
-    });
+    let stream;
+    try {
+      stream = await this.client.chat.completions.create({
+        model: this.model,
+        messages: messages.map(toOpenAIMessage),
+        // OpenAI rejects an empty tools list, so leave the field out when there are none.
+        tools: tools.length > 0 ? tools.map(toOpenAITool) : undefined,
+        stream: true,
+        stream_options: { include_usage: true }, // ask for token counts at the end
+      });
+    } catch (err) {
+      throw toLLMError(err, false);
+    }
 
     // 2. Read the reply piece by piece as it arrives.
     let fullText = "";
     let usage: Usage = { inputTokens: 0, outputTokens: 0 };
-    
+
     const toolCalls: ToolCall[] = [];
 
-    for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta;
+    try {
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta;
 
-      const text = delta?.content;
-      if (text) {
-        fullText += text;
-        yield { type: "text", text };
-      }
+        const text = delta?.content;
+        if (text) {
+          fullText += text;
+          yield { type: "text", text };
+        }
 
-      for (const piece of delta?.tool_calls ?? []) {
-        // The first piece of a call carries its id and name; later pieces
-        // only carry more characters of the arguments JSON.
-        const call = (toolCalls[piece.index] ??= { id: "", name: "", arguments: "" });
-        if (piece.id) call.id = piece.id;
-        if (piece.function?.name) call.name = piece.function.name;
-        if (piece.function?.arguments) call.arguments += piece.function.arguments;
-      }
+        for (const piece of delta?.tool_calls ?? []) {
+          // The first piece of a call carries its id and name; later pieces
+          // only carry more characters of the arguments JSON.
+          const call = (toolCalls[piece.index] ??= { id: "", name: "", arguments: "" });
+          if (piece.id) call.id = piece.id;
+          if (piece.function?.name) call.name = piece.function.name;
+          if (piece.function?.arguments) call.arguments += piece.function.arguments;
+        }
 
-      // Only the last chunk has usage (and its `choices` array is empty).
-      if (chunk.usage) {
-        usage = {
-          inputTokens: chunk.usage.prompt_tokens,
-          outputTokens: chunk.usage.completion_tokens,
-        };
+        // Only the last chunk has usage (and its `choices` array is empty).
+        if (chunk.usage) {
+          usage = {
+            inputTokens: chunk.usage.prompt_tokens,
+            outputTokens: chunk.usage.completion_tokens,
+          };
+        }
       }
+    } catch (err) {
+      // The request was accepted but the stream broke partway (e.g. the connection dropped).
+      throw toLLMError(err, true);
     }
 
     // 3. The stream is finished: hand back the complete reply.
@@ -79,6 +92,42 @@ export class OpenAIProvider implements LLMProvider {
       usage,
     };
   }
+}
+
+// --- Turning SDK errors into our LLMError ---
+
+// Decides which failures are worth retrying. `midStream` is true when the
+// request had already started streaming and then broke.
+function toLLMError(err: unknown, midStream: boolean): LLMError {
+  // The user cancelled (we'll use this for Ctrl+C later): never retry.
+  if (err instanceof OpenAI.APIUserAbortError) {
+    return new LLMError("Request cancelled", false);
+  }
+  // Couldn't reach the server at all (no internet, DNS, timeout): try again.
+  if (err instanceof OpenAI.APIConnectionError) {
+    return new LLMError(`Could not connect: ${err.message}`, true);
+  }
+  // The server answered with an error status.
+  if (err instanceof OpenAI.APIError && err.status !== undefined) {
+    const status = err.status;
+    // 408 timeout, 409 conflict, 429 rate limit, 5xx server trouble: temporary.
+    // Anything else (400 bad request, 401 wrong key, 404 unknown model) won't
+    // fix itself, so retrying would only waste time.
+    const retryable = status === 408 || status === 409 || status === 429 || status >= 500;
+    // err.message already starts with the status, e.g. "404 model 'x' not found".
+    return new LLMError(err.message, retryable, retryAfterMs(err.headers));
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  // A stream that breaks partway is almost always a network problem.
+  return midStream
+    ? new LLMError(`Connection lost during the reply: ${message}`, true)
+    : new LLMError(message, false);
+}
+
+// Servers can say how long to wait with a "Retry-After: <seconds>" header.
+function retryAfterMs(headers: Headers | undefined): number | undefined {
+  const seconds = Number(headers?.get("retry-after"));
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined;
 }
 
 // --- Translating our types into OpenAI's format ---
