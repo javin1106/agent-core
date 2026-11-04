@@ -2,7 +2,8 @@
 import "dotenv/config"; // loads .env into process.env
 import * as readline from "node:readline/promises";
 import { OpenAIProvider } from "./ai/openai.js";
-import type { Message } from "./ai/types.js";
+import type { Message, Usage } from "./ai/types.js";
+import { costOf, formatCost, loadPrices, type Prices } from "./utils/cost.js";
 import { runAgent, type Tool } from "./agent/agent.js";
 import { buildSystemPrompt, loadAgentsFile, MAX_AGENTS_CHARS } from "./agent/system-prompt.js";
 import { readTool } from "./tools/read.js";
@@ -18,6 +19,8 @@ async function main() {
     );
     process.exit(1);
   }
+
+  const prices = loadPrices(); // undefined = no prices set, so no cost is shown
 
   const provider = new OpenAIProvider(model);
   const history: Message[] = [{ role: "system", content: buildSystemPrompt() }];
@@ -49,18 +52,22 @@ async function main() {
   }
   console.log();
 
+  // Running totals for the whole session, printed when you exit.
+  const session = { turns: 0, modelCalls: 0, inputTokens: 0, outputTokens: 0 };
+
   while (true) {
     const input = (await rl.question("you> ")).trim();
     if (input === "exit") break;
     if (input === "") continue;
+    session.turns++;
 
     // Remember where this turn starts, so a failed turn can be undone cleanly.
     const historyLengthBefore = history.length;
     history.push({ role: "user", content: input });
     process.stdout.write("\nassistant> ");
 
-    let inputTokens = 0;
-    let outputTokens = 0;
+    // Tokens for this turn only (one turn can be several model calls).
+    const turn: Usage = { inputTokens: 0, outputTokens: 0 };
 
     try {
       for await (const event of runAgent(provider, history, tools)) {
@@ -80,8 +87,13 @@ async function main() {
             break;
           }
           case "usage":
-            inputTokens += event.usage.inputTokens;
-            outputTokens += event.usage.outputTokens;
+            // Added to the session right away, so tokens spent on a turn that
+            // later fails are still counted: they were used (and billed).
+            turn.inputTokens += event.usage.inputTokens;
+            turn.outputTokens += event.usage.outputTokens;
+            session.modelCalls++;
+            session.inputTokens += event.usage.inputTokens;
+            session.outputTokens += event.usage.outputTokens;
             break;
           case "retry": {
             const seconds = (event.delayMs / 1000).toFixed(1);
@@ -99,7 +111,7 @@ async function main() {
             } else if (event.reason === "max_steps") {
               console.log(`\n⚠️  ${event.text} Ask it to continue, or give it a smaller task.`);
             }
-            console.log(`\n[tokens: ${inputTokens} in, ${outputTokens} out]\n`);
+            console.log(`\n[${describeUsage(turn, prices)}]\n`);
             break;
         }
       }
@@ -114,6 +126,20 @@ async function main() {
   }
 
   rl.close();
+
+  console.log("\nSession summary");
+  console.log(`  turns: ${session.turns}, model calls: ${session.modelCalls}`);
+  console.log(`  ${describeUsage(session, prices)}`);
+  if (!prices) {
+    console.log("  cost: not shown (set PRICE_INPUT_PER_M and PRICE_OUTPUT_PER_M in .env)");
+  }
+}
+
+// "tokens: 1,234 in, 56 out, cost $0.0031" (cost only when prices are set).
+function describeUsage(usage: Usage, prices: Prices | undefined): string {
+  const n = (count: number) => count.toLocaleString("en-US"); // 12345 -> "12,345"
+  const tokens = `tokens: ${n(usage.inputTokens)} in, ${n(usage.outputTokens)} out`;
+  return prices ? `${tokens}, cost ${formatCost(costOf(usage, prices))}` : tokens;
 }
 
 main().catch((err) => {
