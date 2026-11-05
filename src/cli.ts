@@ -4,7 +4,7 @@ import * as readline from "node:readline/promises";
 import { OpenAIProvider } from "./ai/openai.js";
 import type { Message, Usage } from "./ai/types.js";
 import { costOf, formatCost, loadPrices, type Prices } from "./utils/cost.js";
-import { runAgent, type Tool } from "./agent/agent.js";
+import { closeInterruptedTurn, runAgent, type Tool } from "./agent/agent.js";
 import { buildSystemPrompt, loadAgentsFile, MAX_AGENTS_CHARS } from "./agent/system-prompt.js";
 import { readTool } from "./tools/read.js";
 import { writeTool } from "./tools/write.js";
@@ -128,11 +128,17 @@ async function main() {
       }
     } catch (err) {
       // The turn failed for good (retries used up, or an error waiting can't fix,
-      // like a wrong API key). Undo this turn's messages so the history isn't left
-      // half-finished, and keep the session running.
-      history.length = historyLengthBefore;
+      // like a wrong API key). Tidy the history and keep the session running.
       const message = err instanceof Error ? err.message : String(err);
-      console.log(`\n❌ ${message}\n   Your message wasn't kept. Send it again to retry.\n`);
+      const keptSteps = closeInterruptedTurn(history, historyLengthBefore, message);
+      if (keptSteps === 0) {
+        console.log(`\n❌ ${message}\n   Your message wasn't kept. Send it again to retry.\n`);
+      } else {
+        console.log(
+          `\n❌ ${message}\n   The ${keptSteps} finished tool step(s) were kept, so the agent ` +
+            `remembers what it already did. Ask it to continue.\n`,
+        );
+      }
     }
   }
 

@@ -176,6 +176,53 @@ function withResume(history: Message[], resumeText: string): Message[] {
   ];
 }
 
+// Cleans up the history after a turn that failed partway (e.g. retries ran out).
+// `turnStart` is where the turn began (the index of the user's message).
+//
+// - If no tool step finished, the turn left no trace in the world: remove it
+//   completely, so the user can simply send the message again.
+// - If tool steps finished (files may have been written, commands run), keep
+//   them so the model remembers what it really did, and close the turn with a
+//   note saying it was interrupted.
+//
+// Returns how many tool steps were kept (0 = the turn was removed).
+export function closeInterruptedTurn(history: Message[], turnStart: number, error: string): number {
+  // Every tool call needs a matching result, or the API rejects the whole
+  // history. Only the last assistant message can be missing some (tools run in
+  // order), so give any call without a result an "interrupted" one.
+  const last = history.findLast((m) => m.role === "assistant");
+  const answered = new Set(
+    history.flatMap((m) => (m.role === "tool" ? [m.toolCallId] : [])),
+  );
+  for (const call of last?.toolCalls ?? []) {
+    if (!answered.has(call.id)) {
+      history.push({
+        role: "tool",
+        toolCallId: call.id,
+        content: "Error: not run, because the turn was interrupted.",
+      });
+    }
+  }
+
+  const finishedSteps = history
+    .slice(turnStart)
+    .filter((m) => m.role === "tool" && !m.content.startsWith("Error: not run, because the turn"))
+    .length;
+
+  if (finishedSteps === 0) {
+    history.length = turnStart;
+    return 0;
+  }
+
+  history.push({
+    role: "assistant",
+    content:
+      `[This turn was interrupted by an error before I could finish: ${error}. ` +
+      `The tool steps above really happened.]`,
+  });
+  return finishedSteps;
+}
+
 // What the agent reports while it works. The CLI decides how to show each one.
 export type AgentEvent =
   | { type: "text"; text: string } // a piece of the model's reply
