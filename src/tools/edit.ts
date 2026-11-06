@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
-import { defineTool } from "../agent/agent.js";
+import { defineTool } from "./tool.js";
 
 // Counts how many times `search` appears in `text`.
 function countOccurrences(text: string, search: string): number {

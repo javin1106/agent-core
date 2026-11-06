@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { z } from "zod";
-import { defineTool } from "../agent/agent.js";
+import { defineTool } from "./tool.js";
 
 const DEFAULT_TIMEOUT_SECONDS = 120;
 // About 2,500 tokens. Every tool result is re-sent on every later model call,

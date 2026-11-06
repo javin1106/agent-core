@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import { defineTool } from "../agent/agent.js";
+import { defineTool } from "./tool.js";
 
 const MAX_LINES = 2000; // never send more than this many lines in one go
 

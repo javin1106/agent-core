@@ -4,7 +4,9 @@ import * as readline from "node:readline/promises";
 import { OpenAIProvider } from "./ai/openai.js";
 import type { Message, Usage } from "./ai/types.js";
 import { costOf, formatCost, loadPrices, type Prices } from "./utils/cost.js";
-import { closeInterruptedTurn, runAgent, type Tool } from "./agent/agent.js";
+import { runAgent } from "./agent/agent.js";
+import { closeInterruptedTurn } from "./agent/history.js";
+import type { Tool } from "./tools/tool.js";
 import { buildSystemPrompt, loadAgentsFile, MAX_AGENTS_CHARS } from "./agent/system-prompt.js";
 import { readTool } from "./tools/read.js";
 import { writeTool } from "./tools/write.js";
@@ -102,6 +104,13 @@ async function main() {
             session.inputTokens += event.usage.inputTokens;
             session.outputTokens += event.usage.outputTokens;
             break;
+          case "continue":
+            // Same visual marker as a resumed reply: the text picks up after "…".
+            process.stdout.write(
+              `\n↪ The reply hit the length limit. Asking for the rest (${event.count} of ${event.max})...\n`,
+            );
+            resumedReply = true;
+            break;
           case "retry": {
             const seconds = (event.delayMs / 1000).toFixed(1);
             const attempt = `(attempt ${event.attempt} of ${event.maxRetries})`;
@@ -121,6 +130,13 @@ async function main() {
               console.log("\n⚠️  The model ended its turn without an answer.");
             } else if (event.reason === "max_steps") {
               console.log(`\n⚠️  ${event.text} Ask it to continue, or give it a smaller task.`);
+            } else if (event.reason === "cut_off") {
+              console.log(
+                "\n⚠️  The reply was cut off by the length limit, even after continuing. " +
+                  "Any unfinished tool call was not run. Try asking for a shorter answer, or split the task.",
+              );
+            } else if (event.reason === "refused") {
+              console.log("\n⚠️  The model or provider refused to answer this request.");
             }
             console.log(`\n[${describeUsage(turn, prices)}]\n`);
             break;

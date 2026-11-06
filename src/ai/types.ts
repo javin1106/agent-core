@@ -29,9 +29,15 @@ export interface Usage {
 }
 
 // What a provider emits while streaming one reply.
+// Why the model stopped writing a reply:
+// end = finished normally; tool_calls = stopped to ask for tools;
+// length = hit the output limit and was cut off; refused = the provider
+// blocked or the model refused the reply.
+export type StopReason = "end" | "tool_calls" | "length" | "refused";
+
 export type StreamEvent =
   | { type: "text"; text: string } // a piece of the reply, printed as it arrives
-  | { type: "done"; message: AssistantMessage; usage: Usage }; // the complete reply
+  | { type: "done"; message: AssistantMessage; usage: Usage; stopReason: StopReason }; // the complete reply
 
 // A failed model call, in a provider-neutral form. Each provider turns its SDK's
 // errors into this, so the agent loop can decide whether to retry without

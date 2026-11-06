@@ -7,6 +7,7 @@ import {
   LLMError,
   type LLMProvider,
   type Message,
+  type StopReason,
   type StreamEvent,
   type ToolCall,
   type ToolDefinition,
@@ -47,15 +48,28 @@ export class OpenAIProvider implements LLMProvider {
     let usage: Usage = { inputTokens: 0, outputTokens: 0 };
 
     const toolCalls: ToolCall[] = [];
+    // Why the model stopped. Arrives on the last chunk that has a choice.
+    let finishReason: string | null | undefined;
+    let refused = false;
 
     try {
       for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta;
+        const choice = chunk.choices[0];
+        const delta = choice?.delta;
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
 
         const text = delta?.content;
         if (text) {
           fullText += text;
           yield { type: "text", text };
+        }
+
+        // Some models refuse with a separate `refusal` text instead of normal
+        // content. Show it like normal text, so the user sees the reason.
+        if (delta?.refusal) {
+          refused = true;
+          fullText += delta.refusal;
+          yield { type: "text", text: delta.refusal };
         }
 
         for (const piece of delta?.tool_calls ?? []) {
@@ -94,7 +108,24 @@ export class OpenAIProvider implements LLMProvider {
         ...(toolCalls.length > 0 && { toolCalls }),
       },
       usage,
+      stopReason: refused ? "refused" : toStopReason(finishReason, toolCalls.length > 0),
     };
+  }
+}
+
+// OpenAI's finish_reason, in our provider-neutral words.
+function toStopReason(finishReason: string | null | undefined, hasToolCalls: boolean): StopReason {
+  switch (finishReason) {
+    case "length":
+      return "length";
+    case "content_filter":
+      return "refused";
+    case "tool_calls":
+    case "function_call":
+      return "tool_calls";
+    default:
+      // "stop", or a provider that leaves it out: judge from the reply itself.
+      return hasToolCalls ? "tool_calls" : "end";
   }
 }
 

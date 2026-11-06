@@ -14,6 +14,11 @@ export class ScriptedProvider implements LLMProvider {
     const message = this.replies.shift();
     if (!message) throw new Error("ScriptedProvider: no scripted reply left");
     if (message.content) yield { type: "text", text: message.content };
-    yield { type: "done", message, usage: { inputTokens: 0, outputTokens: 0 } };
+    yield {
+      type: "done",
+      message,
+      usage: { inputTokens: 0, outputTokens: 0 },
+      stopReason: message.toolCalls?.length ? "tool_calls" : "end",
+    };
   }
 }
