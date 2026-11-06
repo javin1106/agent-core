@@ -29,6 +29,7 @@ export async function* callModel(
   provider: LLMProvider,
   history: Message[],
   definitions: ToolDefinition[],
+  signal?: AbortSignal,
 ): AsyncGenerator<AgentEvent, ModelReply> {
   let resumeText = ""; // reply text received so far, before a drop or a cut
   let attempt = 1;
@@ -40,6 +41,7 @@ export async function* callModel(
         provider,
         withResume(history, resumeText),
         definitions,
+        signal,
       );
 
       if (canContinue(reply, stopReason) && continues < MAX_CONTINUES) {
@@ -51,7 +53,8 @@ export async function* callModel(
 
       return { reply: { ...reply, content: resumeText + reply.content }, stopReason };
     } catch (err) {
-      if (!isRetryable(err) || attempt > MAX_RETRIES) {
+      // After Ctrl+C, never retry: the error is the cancellation itself.
+      if (signal?.aborted || !isRetryable(err) || attempt > MAX_RETRIES) {
         throw err;
       }
       resumeText += err.partialText;
@@ -64,7 +67,7 @@ export async function* callModel(
         error: err.message,
         resuming: resumeText !== "",
       };
-      await sleep(delayMs);
+      await sleep(delayMs, signal);
       attempt++;
     }
   }
@@ -75,15 +78,20 @@ async function* streamReply(
   provider: LLMProvider,
   messages: Message[],
   definitions: ToolDefinition[],
+  signal?: AbortSignal,
 ): AsyncGenerator<AgentEvent, ModelReply> {
-  for await (const event of provider.stream(messages, definitions)) {
+  for await (const event of provider.stream(messages, definitions, signal)) {
     if (event.type === "text") {
       yield event;
     } else {
       yield { type: "usage", usage: event.usage };
+      // Some SDKs end an aborted stream quietly instead of throwing, which would
+      // make a cut-off reply look finished.
+      signal?.throwIfAborted();
       return { reply: event.message, stopReason: event.stopReason };
     }
   }
+  signal?.throwIfAborted();
   throw new Error("The model's stream ended without a reply");
 }
 

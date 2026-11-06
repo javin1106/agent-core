@@ -27,7 +27,11 @@ export class OpenAIProvider implements LLMProvider {
 
   // `async *` makes this an async generator: a function that can `yield`
   // values one at a time. The caller receives them with `for await`.
-  async *stream(messages: Message[], tools: ToolDefinition[] = []): AsyncIterable<StreamEvent> {
+  async *stream(
+    messages: Message[],
+    tools: ToolDefinition[] = [],
+    signal?: AbortSignal,
+  ): AsyncIterable<StreamEvent> {
     // 1. Start a streaming request. We send the whole history every time.
     let stream;
     try {
@@ -38,7 +42,7 @@ export class OpenAIProvider implements LLMProvider {
         tools: tools.length > 0 ? tools.map(toOpenAITool) : undefined,
         stream: true,
         stream_options: { include_usage: true }, // ask for token counts at the end
-      });
+      }, { signal });
     } catch (err) {
       throw toLLMError(err, false);
     }

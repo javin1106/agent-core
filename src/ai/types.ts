@@ -58,5 +58,5 @@ export class LLMError extends Error {
 
 export interface LLMProvider {
   readonly model: string;
-  stream(messages: Message[], tools?: ToolDefinition[]): AsyncIterable<StreamEvent>;
+  stream(messages: Message[], tools?: ToolDefinition[], signal?: AbortSignal): AsyncIterable<StreamEvent>;
 }

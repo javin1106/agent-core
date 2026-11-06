@@ -1,3 +1,5 @@
+import { setTimeout as wait } from "node:timers/promises";
+
 // How many times to try again after a failed model call (so up to 5 calls in total).
 export const MAX_RETRIES = 4;
 
@@ -15,6 +17,7 @@ export function backoffMs(attempt: number, retryAfterMs?: number): number {
   return Math.min(base + jitter, MAX_DELAY_MS);
 }
 
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// Rejects early if `signal` is aborted, so Ctrl+C doesn't wait out a backoff.
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return wait(ms, undefined, { signal });
 }

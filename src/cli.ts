@@ -31,17 +31,58 @@ async function main() {
     output: process.stdout,
   });
 
+  let turnAbort: AbortController | undefined; // set while the agent is working
+  let questionAbort = new AbortController(); // the question waiting for input
+  let closed = false;
+  let lastPromptCtrlC = 0;
+
+  // Ctrl+D. A waiting question never settles on its own when input closes, so cancel it.
+  rl.on("close", () => {
+    closed = true;
+    questionAbort.abort();
+  });
+
+  rl.on("SIGINT", () => {
+    if (turnAbort) {
+      if (!turnAbort.signal.aborted) process.stdout.write("\n⏹  Stopping...\n");
+      turnAbort.abort();
+      questionAbort.abort(); // e.g. a pending y/n prompt
+      return;
+    }
+    // At the prompt: a second Ctrl+C within 2s exits, so one stray press doesn't.
+    if (Date.now() - lastPromptCtrlC < 2000) {
+      rl.close();
+      return;
+    }
+    lastPromptCtrlC = Date.now();
+    process.stdout.write("\n(Press Ctrl+C again to exit)\n");
+    questionAbort.abort(); // shows a fresh prompt
+  });
+
+  // Returns undefined if the question was cancelled (Ctrl+C) or input closed (Ctrl+D).
+  const ask = async (query: string): Promise<string | undefined> => {
+    questionAbort = new AbortController();
+    try {
+      return await rl.question(query, { signal: questionAbort.signal });
+    } catch {
+      return undefined;
+    }
+  };
+
   // `npm run dev -- --yolo` runs commands without asking (Pi's default).
   const yolo = process.argv.includes("--yolo");
   const confirmCommand = async (command: string): Promise<boolean> => {
     if (yolo) return true;
-    const answer = await rl.question(`\n⚠️  Run: ${command}\n   Allow? (y/n) `);
-    return answer.trim().toLowerCase() === "y";
+    const answer = await ask(`\n⚠️  Run: ${command}\n   Allow? (y/n) `);
+    return answer?.trim().toLowerCase() === "y";
   };
 
   const tools: Tool[] = [readTool, writeTool, editTool, createBashTool(confirmCommand)];
 
-  console.log(`agent-core (${model})${yolo ? " [yolo: commands run without asking]" : ""}. Type "exit" to quit.`);
+  console.log(
+    `agent-core (${model})${yolo ? " [yolo: commands run without asking]" : ""}. ` +
+      `Ctrl+C stops the current task; "exit", Ctrl+D or Ctrl+C twice quits.`,
+  );
 
   // Always say when AGENTS.md is in use: it steers the agent, and in a repo
   // someone else wrote, the user should know it's there.
@@ -58,7 +99,10 @@ async function main() {
   const session = { turns: 0, modelCalls: 0, inputTokens: 0, outputTokens: 0 };
 
   while (true) {
-    const input = (await rl.question("you> ")).trim();
+    const line = await ask("you> ");
+    if (closed) break;
+    if (line === undefined) continue; // Ctrl+C at the prompt
+    const input = line.trim();
     if (input === "exit") break;
     if (input === "") continue;
     session.turns++;
@@ -73,8 +117,9 @@ async function main() {
     // True right after a "resuming" notice, until the continuation's first text arrives.
     let resumedReply = false;
 
+    turnAbort = new AbortController();
     try {
-      for await (const event of runAgent(provider, history, tools)) {
+      for await (const event of runAgent(provider, history, tools, { signal: turnAbort.signal })) {
         switch (event.type) {
           case "text":
             // Mark where a resumed reply picks up again, e.g. "…lo, world".
@@ -143,22 +188,28 @@ async function main() {
         }
       }
     } catch (err) {
-      // The turn failed for good (retries used up, or an error waiting can't fix,
-      // like a wrong API key). Tidy the history and keep the session running.
-      const message = err instanceof Error ? err.message : String(err);
+      // The turn was stopped (Ctrl+C) or failed for good. Tidy the history and keep going.
+      const stopped = turnAbort.signal.aborted;
+      const message = stopped
+        ? "Stopped by the user (Ctrl+C)"
+        : err instanceof Error ? err.message : String(err);
       const keptSteps = closeInterruptedTurn(history, historyLengthBefore, message);
+
+      const headline = stopped ? "⏹  Stopped." : `❌ ${message}`;
       if (keptSteps === 0) {
-        console.log(`\n❌ ${message}\n   Your message wasn't kept. Send it again to retry.\n`);
+        console.log(`\n${headline}\n   Your message wasn't kept. Send it again to retry.\n`);
       } else {
         console.log(
-          `\n❌ ${message}\n   The ${keptSteps} finished tool step(s) were kept, so the agent ` +
+          `\n${headline}\n   The ${keptSteps} finished tool step(s) were kept, so the agent ` +
             `remembers what it already did. Ask it to continue.\n`,
         );
       }
+    } finally {
+      turnAbort = undefined;
     }
   }
 
-  rl.close();
+  if (!closed) rl.close();
 
   console.log("\nSession summary");
   console.log(`  turns: ${session.turns}, model calls: ${session.modelCalls}`);

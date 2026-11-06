@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { z } from "zod";
 import { defineTool } from "./tool.js";
@@ -19,12 +19,15 @@ function findBash(): string {
 
 interface CommandResult {
   output: string; // stdout and stderr mixed, in the order they were printed
-  exitCode: number | null; // 0 = success; null if the process was killed
-  timedOut: boolean;
+  exitCode: number | null; // null if the process was killed
+  stopped?: "timeout" | "cancelled";
 }
 
-// Runs one command and waits for it to finish (or time out).
-function runCommand(command: string, timeoutSeconds: number): Promise<CommandResult> {
+function runCommand(
+  command: string,
+  timeoutSeconds: number,
+  signal?: AbortSignal,
+): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(findBash(), ["-c", command], { cwd: process.cwd() });
 
@@ -32,22 +35,39 @@ function runCommand(command: string, timeoutSeconds: number): Promise<CommandRes
     child.stdout.on("data", (data) => (output += data));
     child.stderr.on("data", (data) => (output += data));
 
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, timeoutSeconds * 1000);
+    let stopped: CommandResult["stopped"];
+    const stop = (why: "timeout" | "cancelled") => {
+      stopped = why;
+      killTree(child);
+    };
+    const timer = setTimeout(() => stop("timeout"), timeoutSeconds * 1000);
+    const onAbort = () => stop("cancelled");
+    signal?.addEventListener("abort", onAbort);
 
+    const cleanUp = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
     // "error" = the shell couldn't even start; "close" = it finished.
     child.on("error", (err) => {
-      clearTimeout(timer);
+      cleanUp();
       reject(err);
     });
     child.on("close", (exitCode) => {
-      clearTimeout(timer);
-      resolve({ output, exitCode, timedOut });
+      cleanUp();
+      resolve({ output, exitCode, stopped });
     });
   });
+}
+
+// On Windows, child.kill() only stops bash itself; programs it started keep
+// running. taskkill /T stops the whole process tree.
+function killTree(child: ChildProcess): void {
+  if (process.platform === "win32" && child.pid !== undefined) {
+    spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"]);
+  } else {
+    child.kill();
+  }
 }
 
 // Keep the END of long output: errors and summaries are usually printed last.
@@ -74,18 +94,17 @@ export function createBashTool(confirm: (command: string) => Promise<boolean>) {
         .optional()
         .describe(`Seconds before the command is stopped (default ${DEFAULT_TIMEOUT_SECONDS})`),
     }),
-    async execute(args) {
+    async execute(args, { signal }) {
       if (!(await confirm(args.command))) {
         return "The user declined to run this command.";
       }
 
-      const { output, exitCode, timedOut } = await runCommand(
-        args.command,
-        args.timeout ?? DEFAULT_TIMEOUT_SECONDS,
-      );
+      const timeout = args.timeout ?? DEFAULT_TIMEOUT_SECONDS;
+      const { output, exitCode, stopped } = await runCommand(args.command, timeout, signal);
 
-      const status = timedOut
-        ? `Stopped: the command took longer than ${args.timeout ?? DEFAULT_TIMEOUT_SECONDS}s.`
+      const status =
+        stopped === "timeout" ? `Stopped: the command took longer than ${timeout}s.`
+        : stopped === "cancelled" ? "Stopped: the user cancelled it (Ctrl+C)."
         : `Exit code: ${exitCode}`;
       return `${truncate(output.trim()) || "(no output)"}\n\n${status}`;
     },
