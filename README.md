@@ -92,7 +92,7 @@ The agent only **emits events**; the CLI just **draws** them. Swapping in a TUI 
 
 ## 📊 Benchmark
 
-15 small coding tasks (create, edit, search, run), each in a fresh temp folder, checked automatically.
+15 small coding tasks (create, edit, search, run), each in a fresh temp folder, checked automatically. Run it yourself with `npm run eval -- --runs 3`.
 
 | Model | Pass rate | Model calls / task | Tokens / task | Time / task |
 |---|---|---|---|---|
@@ -102,8 +102,8 @@ The agent only **emits events**; the CLI just **draws** them. Swapping in a TUI 
 
 - [x] Agent loop, tools, zod validation, `AGENTS.md`
 - [x] Retries, resume, auto-continue, Ctrl+C, cost tracking
+- [x] Eval suite (`npm run eval`) and importable library (`src/index.ts`)
 - [ ] Context compaction + saved sessions (`--continue`)
-- [ ] Eval suite in the repo (`npm run eval`)
 - [ ] Publish to npm, then a proper TUI
 
 <div align="center">
